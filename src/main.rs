@@ -9,6 +9,8 @@ use std::io::{self, Write};
 use std::env;
 use regex::Regex;
 use ethers::providers::{Provider, Http}; // Добавляем для работы с провайдерами
+use serde::{Serialize, Deserialize};
+
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct Event {
@@ -92,9 +94,12 @@ impl BlockchainClient {
     }
 
     // Получение данных из контракта
-    async fn get_contract_data(&self, abi: &[u8], contract_address: Address) -> Result<U256, ContractError> {
-        let contract = Contract::from_json(self.provider.clone(), contract_address, abi)?;
-        let data: U256 = contract.query("counter", (), None, Options::default(), None).await?;
+    async fn get_contract_data<M>(&self, abi: &[u8], contract_address: Address) -> Result<U256, ContractError<M>>
+where
+    M: Middleware,
+> {
+        let contract = Contract::new(contract_address, abi, self.provider.clone());
+        let data: U256 = contract.query("counter", (), None, Default::default(), None).await?;
         Ok(data)
     }
 
@@ -138,10 +143,12 @@ impl BlockchainClient {
     async fn subscribe_to_events(&self, contract_address: Address) {
         let filter = Filter::new().address(contract_address).event("CounterIncremented");
 
-        let mut stream = self.provider.watch_logs(&filter).await.unwrap();
+        let mut stream = self.provider.watch(&filter).await.unwrap();
+
+
 
         while let Some(log) = stream.next().await {
-            let decoded: (U256,) = self.provider.decode_log(&log).unwrap();
+            let decoded: (U256,) = contract.decode_log(&log).unwrap();
             println!("Получено событие: CounterIncremented с новым значением: {}", decoded.0);
         }
     }

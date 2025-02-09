@@ -8,6 +8,7 @@ use futures::future::join_all;
 use std::io::{self, Write};
 use std::env;
 use regex::Regex;
+use dotenv::dotenv;
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct Event {
@@ -163,6 +164,16 @@ impl BlockchainClient {
         let owner: Address = contract.query("owner", (), None, Default::default(), None).await.unwrap();
         owner
     }
+
+    // Новая функция для получения текущей блокчейн информации
+    fn get_blockchain_info(&self) -> String {
+        format!("Текущий блокчейн: {:?}", self.blockchain_type)
+    }
+
+    // Новая функция для получения списка контрактов
+    fn list_contracts(&self) -> Vec<Address> {
+        self.contracts.clone()
+    }
 }
 
 fn validate_address(address: &str) -> Result<Address, String> {
@@ -184,6 +195,7 @@ fn validate_private_key(private_key: &str) -> Result<String, String> {
 }
 
 fn get_private_key_from_env() -> Option<String> {
+    dotenv().ok();
     match env::var("PRIVATE_KEY") {
         Ok(key) => Some(key),
         Err(_) => None,
@@ -201,7 +213,9 @@ fn show_menu() {
     println!("3. Подписаться на события");
     println!("4. Переключить блокчейн");
     println!("5. Работать с несколькими контрактами");
-    println!("6. Выход");
+    println!("6. Показать информацию о текущем блокчейне");
+    println!("7. Показать все контракты");
+    println!("8. Выход");
 }
 
 #[tokio::main]
@@ -274,6 +288,15 @@ async fn main() {
                 blockchain_client.get_data_from_multiple_contracts(contract_addresses, abi).await;
             }
             "6" => {
+                println!("{}", blockchain_client.get_blockchain_info());
+            }
+            "7" => {
+                let contracts = blockchain_client.list_contracts();
+                for contract in contracts {
+                    println!("Контракт: {:?}", contract);
+                }
+            }
+            "8" => {
                 break;
             }
             _ => eprintln!("Неверный выбор"),

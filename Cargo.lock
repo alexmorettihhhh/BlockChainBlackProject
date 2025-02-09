@@ -3,6 +3,19 @@
 version = 4
 
 [[package]]
+name = "BlockChainBlackProject"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "ethers",
+ "futures",
+ "log",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "Inflector"
 version = "0.11.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -262,19 +275,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fa79dedbb091f449f1f39e53edf88d5dbe95f895dae6135a8d7b881fb5af73f5"
 dependencies = [
  "byte-tools",
-]
-
-[[package]]
-name = "blockchain_event_project"
-version = "0.1.0"
-dependencies = [
- "env_logger",
- "ethers",
- "futures",
- "log",
- "serde",
- "serde_json",
- "tokio",
 ]
 
 [[package]]

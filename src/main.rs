@@ -69,8 +69,7 @@ impl BlockchainClient {
         &self.provider
     }
 
-
-    async fn get_balance(&self, address: Address) -> U256 {
+    async fn get_balance_ethereum(&self, address: Address) -> U256 {
         match self.provider.get_balance(address, None).await {
             Ok(balance) => balance,
             Err(e) => {
@@ -80,6 +79,18 @@ impl BlockchainClient {
         }
     }
 
+    async fn get_balance_sol(&self, address: Address) -> Result<U256, String> {
+        // Специфическая логика для получения баланса на Solana
+        Err("Не поддерживается для Solana".to_string())
+    }
+
+    async fn get_balance(&self, address: Address) -> U256 {
+        match self.blockchain_type {
+            BlockchainType::Ethereum => self.get_balance_ethereum(address).await,
+            BlockchainType::Solana => self.get_balance_sol(address).await.unwrap_or(U256::zero()),
+            _ => U256::zero(), // для других блокчейнов пока не реализовано
+        }
+    }
 
     async fn get_events_from_block(&self, block_number: u64, contract_address: Address) -> Vec<Log> {
         let filter = Filter::new()
@@ -90,16 +101,14 @@ impl BlockchainClient {
         logs
     }
 
-
     async fn get_contract_data<M>(&self, abi: &[u8], contract_address: Address) -> Result<U256, ContractError<M>>
     where
         M: Middleware,
     {
         let contract = Contract::new(contract_address, abi, self.provider.clone());
-        let data: U256 = contract.query("counter", (), None, Default::default(), None).await?;
+        let data: U256 = contract.query("counter", (), None, Default::default(), None).await?; 
         Ok(data)
     }
-
 
     async fn get_data_from_multiple_contracts(&self, contracts: Vec<Address>, abi: &[u8]) {
         let tasks: Vec<_> = contracts.into_iter().map(|contract_address| {
@@ -114,7 +123,6 @@ impl BlockchainClient {
             }
         }
     }
-
 
     async fn send_transaction<M>(&self, contract_address: Address, abi: &[u8], from: Address, private_key: &str) -> Result<(), ContractError<M>>
     where
@@ -139,7 +147,6 @@ impl BlockchainClient {
         Ok(())
     }
 
-
     async fn subscribe_to_events(&self, contract_address: Address) {
         let filter = Filter::new().address(contract_address).event("CounterIncremented");
 
@@ -151,14 +158,12 @@ impl BlockchainClient {
         }
     }
 
-
     async fn get_contract_owner(&self, contract_address: Address, abi: &[u8]) -> Address {
         let contract = Contract::new(contract_address, abi, self.provider.clone());
         let owner: Address = contract.query("owner", (), None, Default::default(), None).await.unwrap();
         owner
     }
 }
-
 
 fn validate_address(address: &str) -> Result<Address, String> {
     let re = Regex::new(r"^0x[a-fA-F0-9]{40}$").unwrap();
@@ -169,7 +174,6 @@ fn validate_address(address: &str) -> Result<Address, String> {
     }
 }
 
-
 fn validate_private_key(private_key: &str) -> Result<String, String> {
     let private_key = private_key.trim();
     if private_key.len() == 66 && private_key.starts_with("0x") {
@@ -179,14 +183,12 @@ fn validate_private_key(private_key: &str) -> Result<String, String> {
     }
 }
 
-
 fn get_private_key_from_env() -> Option<String> {
     match env::var("PRIVATE_KEY") {
         Ok(key) => Some(key),
         Err(_) => None,
     }
 }
-
 
 fn send_notification(message: &str) {
     println!("[ALERT] {}", message);
@@ -215,7 +217,6 @@ async fn main() {
 
         match choice.trim() {
             "1" => {
-                
                 println!("Введите адрес кошелька:");
                 let mut address = String::new();
                 io::stdin().read_line(&mut address).expect("Не удалось прочитать строку");
@@ -229,7 +230,6 @@ async fn main() {
                 }
             }
             "2" => {
-                
                 println!("Введите приватный ключ:");
                 let mut private_key = String::new();
                 io::stdin().read_line(&mut private_key).expect("Не удалось прочитать строку");
@@ -242,11 +242,9 @@ async fn main() {
                 }
             }
             "3" => {
-                
                 blockchain_client.subscribe_to_events(contract_address).await;
             }
             "4" => {
-                
                 println!("Выберите блокчейн (Ethereum, Polygon, BSC, Solana):");
                 let mut blockchain_choice = String::new();
                 io::stdin().read_line(&mut blockchain_choice).expect("Не удалось прочитать строку");
@@ -263,7 +261,6 @@ async fn main() {
                 println!("Переключение блокчейна на {:?}", new_blockchain);
             }
             "5" => {
-                
                 println!("Введите адреса контрактов через запятую (например, 0xAddress1,0xAddress2):");
                 let mut addresses_input = String::new();
                 io::stdin().read_line(&mut addresses_input).expect("Не удалось прочитать строку");
@@ -277,7 +274,6 @@ async fn main() {
                 blockchain_client.get_data_from_multiple_contracts(contract_addresses, abi).await;
             }
             "6" => {
-                
                 break;
             }
             _ => eprintln!("Неверный выбор"),

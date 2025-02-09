@@ -1,14 +1,11 @@
-use ethers::prelude::*;
-use ethers::contract::{Contract, ContractError};
-use ethers::types::{TransactionRequest, U256, Address, Log, BlockId, BlockNumber, Options};
-use log::{error, info};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use futures::future::join_all;
-use std::io::{self, Write};
-use std::env;
-use regex::Regex;
-use dotenv::dotenv;
+use ethers::{
+    prelude::*,
+    providers::{Http, Provider},
+    types::{TransactionRequest, U256, Address, Log, BlockId, BlockNumber, Filter},
+    contract::{Contract, ContractError},
+    middleware::Middleware,
+    signers::LocalWallet,
+};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct Event {
@@ -45,19 +42,18 @@ struct BlockchainClient {
     contracts: Vec<Address>,
     blockchain_type: BlockchainType,
 }
-
 impl BlockchainClient {
     fn new(blockchain_type: BlockchainType) -> Self {
         let url = blockchain_type.get_url();
-        let provider = Provider::<Http>::try_from(url).expect("Invalid provider");
-
+        let provider = Provider::new(Http::new(url.parse().unwrap()));
+        
         BlockchainClient {
             provider,
             contracts: Vec::new(),
             blockchain_type,
-        }
-    }
-
+        } =
+    } =
+} =
     fn add_contract(&mut self, contract_address: Address) {
         self.contracts.push(contract_address);
     }
@@ -96,10 +92,9 @@ impl BlockchainClient {
     async fn get_events_from_block(&self, block_number: u64, contract_address: Address) -> Vec<Log> {
         let filter = Filter::new()
             .address(contract_address)
-            .from_block(BlockId::Number(BlockNumber::Number(block_number.into())));
-
-        let logs = self.provider.get_logs(&filter).await.unwrap();
-        logs
+            .from_block(BlockNumber::Number(block_number.into()));
+        
+        self.provider.get_logs(&filter).await.unwrap()
     }
 
     async fn get_contract_data<M>(&self, abi: &[u8], contract_address: Address) -> Result<U256, ContractError<M>>
@@ -125,26 +120,15 @@ impl BlockchainClient {
         }
     }
 
-    async fn send_transaction<M>(&self, contract_address: Address, abi: &[u8], from: Address, private_key: &str) -> Result<(), ContractError<M>>
-    where
-        M: Middleware,
-    {
+    async fn send_transaction(&self, contract_address: Address, abi: &[u8], from: Address, private_key: &str) -> Result<(), ContractError<Provider<Http>>> {
         let wallet: LocalWallet = private_key.parse().expect("Invalid private key");
-        let provider = self.provider.with_sender(wallet.clone());
-
-        let contract = Contract::new(contract_address, abi, provider.clone());
-
-        let tx: TransactionRequest = contract.call("incrementCounter", (), from).await?;
-
-        let pending_tx = provider.send_transaction(tx, None).await?;
-
-        let receipt = pending_tx.confirmations(1).await?;
-        if let Some(receipt) = receipt {
-            send_notification(&format!("Транзакция успешна, хэш: {:?}", receipt.transaction_hash));
-        } else {
-            eprintln!("Транзакция не была подтверждена.");
-        }
-
+        let client = SignerMiddleware::new(self.provider.clone(), wallet);
+        let contract = Contract::new(contract_address, abi, Arc::new(client));
+        
+        let call = contract.method::<_, ()>("incrementCounter", ())?;
+        let tx = call.send().await?;
+        
+        println!("Transaction hash: {:?}", tx.tx_hash());
         Ok(())
     }
 
@@ -222,7 +206,7 @@ fn show_menu() {
 async fn main() {
     let mut blockchain_client = BlockchainClient::new(BlockchainType::Ethereum);
     let contract_address: Address = "0xYourContractAddress".parse().unwrap();
-    let abi = include_bytes!("../path_to_your_contract/contract_abi.json");
+    let abi = include_bytes!("../contracts/abi.json");
 
     loop {
         show_menu();

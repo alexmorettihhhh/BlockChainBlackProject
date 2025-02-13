@@ -6,11 +6,17 @@ use ethers::{
     middleware::Middleware,
     signers::LocalWallet,
 };
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH, Duration},
+};
 use regex::Regex;
 use dotenv::dotenv;
 use std::env;
 use tokio::sync::mpsc;
+use serde::{Serialize, Deserialize};
+use log::{info, error, warn};
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
 struct Event {
@@ -43,16 +49,16 @@ impl BlockchainType {
 }
 
 struct BlockchainClient {
-    provider: Provider<Http>,
+    provider: Arc<Provider<Http>>,
     contracts: Vec<Address>,
     blockchain_type: BlockchainType,
-    cache: HashMap<String, U256>,
+    cache: HashMap<String, (U256, u64)>, // Cache with TTL
 }
 
 impl BlockchainClient {
     fn new(blockchain_type: BlockchainType) -> Self {
         let url = blockchain_type.get_url();
-        let provider = Provider::new(Http::new(url.parse().unwrap()));
+        let provider = Arc::new(Provider::<Http>::try_from(url).unwrap());
         BlockchainClient {
             provider,
             contracts: Vec::new(),
@@ -67,13 +73,15 @@ impl BlockchainClient {
 
     fn switch_blockchain(&mut self, new_blockchain_type: BlockchainType) {
         self.blockchain_type = new_blockchain_type;
+        let url = new_blockchain_type.get_url();
+        self.provider = Arc::new(Provider::<Http>::try_from(url).unwrap());
     }
 
     async fn get_balance_ethereum(&self, address: Address) -> U256 {
         match self.provider.get_balance(address, None).await {
             Ok(balance) => balance,
             Err(e) => {
-                eprintln!("Ошибка при получении баланса: {}", e);
+                error!("Ошибка при получении баланса: {}", e);
                 U256::zero()
             }
         }
@@ -95,8 +103,7 @@ impl BlockchainClient {
         let mut transactions = Vec::new();
         let block_number = self.provider.get_block_number().await.unwrap();
         for i in 0..block_number.as_u64() {
-            let block = self.provider.get_block(BlockId::Number(i.into())).await.unwrap();
-            if let Some(block) = block {
+            if let Some(block) = self.provider.get_block(BlockId::Number(i.into())).await.unwrap() {
                 for tx in block.transactions {
                     if let Transaction::Legacy(tx) = tx {
                         if tx.from == address || tx.to == Some(address) {
@@ -123,13 +130,33 @@ impl BlockchainClient {
         }
     }
 
-    async fn get_gas_price(&self) -> U256 {
-        match self.provider.get_gas_price().await {
-            Ok(price) => price,
-            Err(e) => {
-                eprintln!("Ошибка при получении газовой цены: {}", e);
-                U256::zero()
-            }
+    async fn send_transaction(
+        &self,
+        to: Address,
+        value: U256,
+        private_key: &str,
+    ) -> Result<H256, String> {
+        let wallet = private_key.parse::<LocalWallet>().map_err(|e| e.to_string())?;
+        let chain_id = self.provider.get_chainid().await.map_err(|e| e.to_string())?;
+        let client = SignerMiddleware::new(self.provider.clone(), wallet.with_chain_id(chain_id.as_u64()));
+
+        let tx = TransactionRequest::new().to(to).value(value);
+        match client.send_transaction(tx, None).await {
+            Ok(pending_tx) => Ok(pending_tx.tx_hash()),
+            Err(e) => Err(format!("Ошибка при отправке транзакции: {}", e)),
+        }
+    }
+
+    async fn subscribe_to_events(&self, contract_address: Address, abi: &[u8]) {
+        let contract = Contract::new(contract_address, abi.into(), self.provider.clone());
+        let filter = Filter::new().address(contract_address);
+
+        let mut stream = self.provider.subscribe_logs(&filter).await.unwrap();
+        while let Some(log) = stream.next().await {
+            info!(
+                "Получено событие: {:?} в блоке {}",
+                log.topics, log.block_number.unwrap_or_default()
+            );
         }
     }
 
@@ -141,11 +168,19 @@ impl BlockchainClient {
 
     fn get_cached_balance(&mut self, address: Address) -> U256 {
         let key = format!("{:?}", address);
-        if let Some(balance) = self.cache.get(&key) {
-            return *balance;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        if let Some((balance, timestamp)) = self.cache.get(&key) {
+            if now - timestamp < 300 { // TTL = 5 минут
+                return *balance;
+            }
         }
+
         let balance = self.get_balance(address).await;
-        self.cache.insert(key, balance);
+        self.cache.insert(key, (balance, now));
         balance
     }
 
@@ -202,6 +237,8 @@ fn show_menu() {
 
 #[tokio::main]
 async fn main() {
+    env_logger::init();
+
     let mut blockchain_client = BlockchainClient::new(BlockchainType::Ethereum);
     let contract_address: Address = "0xYourContractAddress".parse().unwrap();
     let abi = include_bytes!("../contracts/abi.json");
@@ -225,7 +262,7 @@ async fn main() {
                         let balance = blockchain_client.get_balance(address).await;
                         println!("Баланс: {}", balance);
                     }
-                    Err(e) => eprintln!("Ошибка валидации адреса: {}", e),
+                    Err(e) => error!("Ошибка валидации адреса: {}", e),
                 }
             }
             "2" => {
@@ -236,16 +273,30 @@ async fn main() {
                     .expect("Не удалось прочитать строку");
                 match validate_private_key(private_key.trim()) {
                     Ok(private_key) => {
-                        blockchain_client
-                            .send_transaction(contract_address, abi, contract_address, &private_key)
-                            .await
-                            .unwrap();
+                        println!("Введите адрес получателя:");
+                        let mut to_address = String::new();
+                        std::io::stdin()
+                            .read_line(&mut to_address)
+                            .expect("Не удалось прочитать строку");
+                        let to_address = validate_address(to_address.trim()).unwrap();
+
+                        println!("Введите сумму:");
+                        let mut amount = String::new();
+                        std::io::stdin()
+                            .read_line(&mut amount)
+                            .expect("Не удалось прочитать строку");
+                        let amount = amount.trim().parse::<U256>().unwrap();
+
+                        match blockchain_client.send_transaction(to_address, amount, &private_key).await {
+                            Ok(tx_hash) => println!("Транзакция отправлена: {:?}", tx_hash),
+                            Err(e) => error!("Ошибка при отправке транзакции: {}", e),
+                        }
                     }
-                    Err(e) => eprintln!("Ошибка валидации приватного ключа: {}", e),
+                    Err(e) => error!("Ошибка валидации приватного ключа: {}", e),
                 }
             }
             "3" => {
-                blockchain_client.subscribe_to_events(contract_address).await;
+                blockchain_client.subscribe_to_events(contract_address, abi).await;
             }
             "4" => {
                 println!("Выберите блокчейн (Ethereum, Polygon, BSC, Solana):");
@@ -274,9 +325,10 @@ async fn main() {
                     .split(',')
                     .filter_map(|addr| addr.parse().ok())
                     .collect();
-                blockchain_client
-                    .get_data_from_multiple_contracts(contract_addresses, abi)
-                    .await;
+                for address in contract_addresses {
+                    blockchain_client.add_contract(address);
+                }
+                println!("Контракты добавлены.");
             }
             "6" => {
                 println!("{}", blockchain_client.get_blockchain_info());
@@ -290,6 +342,7 @@ async fn main() {
             "8" => {
                 break;
             }
-            _ => eprintln!("Неверный выбор"),
+            _ => error!("Неверный выбор"),
         }
     }
+}
